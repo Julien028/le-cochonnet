@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5">
+  <title>LeCochonnet — Tournois de pétanque</title>
+  <meta name="description" content="Organisation et suivi en direct de tournois de pétanque">
+  <meta name="theme-color" content="#b94a2c">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="icon.svg">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="LeCochonnet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <div class="empty" style="margin-top: 80px;">Chargement…</div>
+  </div>
+
+  <!-- Supabase JS SDK -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.min.js"></script>
+
+  <!-- Configuration (clés Supabase) -->
+  <script src="config.js"></script>
+
+  <!-- Application -->
+  <script src="app.js"></script>
+
+  <!-- Enregistrement du Service Worker (mode PWA hors-ligne + mises à jour automatiques) -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        navigator.serviceWorker.register('service-worker.js')
+          .then(registration => {
+            // Vérifie immédiatement si une nouvelle version du SW est disponible
+            registration.update();
+
+            // Vérifie aussi toutes les 60 secondes pendant que l'app est ouverte
+            setInterval(() => registration.update(), 60000);
+
+            // Quand un nouveau SW est trouvé, on l'active automatiquement
+            registration.addEventListener('updatefound', () => {
+              const newWorker = registration.installing;
+              if (!newWorker) return;
+              newWorker.addEventListener('statechange', () => {
+                if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+                  // Nouvelle version prête. On lui demande de prendre la main tout de suite.
+                  newWorker.postMessage('SKIP_WAITING');
+                }
+              });
+            });
+
+            // Quand un nouveau SW prend le contrôle, on recharge la page pour utiliser la nouvelle version
+            let refreshing = false;
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+              if (refreshing) return;
+              refreshing = true;
+              window.location.reload();
+            });
+          })
+          .catch(err => console.warn('Service worker non enregistré:', err));
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,19 @@
+{
+  "name": "LeCochonnet",
+  "short_name": "Cochonnet",
+  "description": "Organisation de tournois de pétanque",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f4ede1",
+  "theme_color": "#b94a2c",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
