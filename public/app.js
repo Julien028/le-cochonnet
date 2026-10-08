@@ -1276,6 +1276,7 @@ function renderAdmin() {
 function mainTabs() {
   const tabs = [
     { id: 'tournoi', label: 'Tournoi' },
+    ...(STATE.mode === 'public' ? [{ id: 'equipe', label: '⭐ Mon équipe' }] : []),
     { id: 'plan', label: 'Plan' },
     { id: 'planning', label: 'Planning' },
     { id: 'reglement', label: 'Règlement' },
@@ -1305,6 +1306,7 @@ function renderActiveTab() {
   const c = $('#tab-content');
   if (STATE.mode === 'public') {
     if (STATE.activeTab === 'tournoi') renderPublicTournoi(c);
+    else if (STATE.activeTab === 'equipe') renderMonEquipeTab(c);
     else if (STATE.activeTab === 'plan') renderPlanTab(c);
     else if (STATE.activeTab === 'planning') renderPlanningTab(c);
     else if (STATE.activeTab === 'reglement') renderReglementTab(c);
@@ -4156,7 +4158,7 @@ async function loadAndRenderPublic(slug) {
     migrateState(t.state);
     STATE.tournament = t;
     STATE.mode = 'public';
-    STATE.activeTab = 'tournoi';
+    STATE.activeTab = getMonEquipe(slug) ? 'equipe' : 'tournoi';
     renderPublic();
     subscribeToTournament(t.id, fresh => {
       STATE.tournament = fresh;
@@ -4265,6 +4267,138 @@ function renderPublicTournoi(container) {
       });
     });
   }
+}
+
+// ============== MON ÉQUIPE (vue publique) ==============
+
+// L'équipe choisie est retenue sur le téléphone, tournoi par tournoi
+const MON_EQUIPE_KEY_PREFIX = 'lecochonnet_mon_equipe_';
+
+function getMonEquipe(slug) {
+  try { return localStorage.getItem(MON_EQUIPE_KEY_PREFIX + slug) || ''; } catch { return ''; }
+}
+
+function setMonEquipe(slug, team) {
+  try {
+    if (team) localStorage.setItem(MON_EQUIPE_KEY_PREFIX + slug, team);
+    else localStorage.removeItem(MON_EQUIPE_KEY_PREFIX + slug);
+  } catch {}
+}
+
+// Tous les matchs d'une équipe, dans l'ordre du tournoi, avec horaire et terrain quand ils sont connus
+function teamMatches(s, team) {
+  const list = [];
+  const concerne = m => m && (m.a === team || m.b === team);
+  if (s.planning && s.planning.poules && s.planning.poules.length) {
+    s.planning.poules.forEach(slot => slot.matches.forEach(sm => {
+      const m = s.poules[sm.pi] && s.poules[sm.pi].matches[sm.mi];
+      if (concerne(m)) list.push({ phase: 'Poule ' + s.poules[sm.pi].name, m, time: slot.time, terrain: sm.terrain });
+    }));
+  } else {
+    (s.poules || []).forEach(p => p.matches.forEach(m => {
+      if (concerne(m)) list.push({ phase: 'Poule ' + p.name, m });
+    }));
+  }
+  [['principal', s.brPrincipal, s.petiteFinalePrincipal, ''], ['conso', s.brConso, s.petiteFinaleConso, ' (consolante)']]
+    .forEach(([key, br, pf, suffixe]) => {
+      if (!br) return;
+      const labels = roundLabels(br.length);
+      br.forEach((round, ri) => round.forEach((m, mi) => {
+        // Un match sans adversaire est une qualification d'office : rien à jouer
+        if (!concerne(m) || m.a === null || m.b === null) return;
+        const sched = findScheduleForBracketMatch(s, key, ri, mi);
+        list.push({ phase: labels[ri] + suffixe, m, time: sched && sched.time, terrain: sched && sched.terrain });
+      }));
+      if (concerne(pf) && pf.a !== null && pf.b !== null) list.push({ phase: 'Petite finale' + suffixe, m: pf });
+    });
+  return list;
+}
+
+function monEquipeMatchHtml(x, team) {
+  const m = x.m;
+  const nous = m.a === team ? m.scoreA : m.scoreB;
+  const eux = m.a === team ? m.scoreB : m.scoreA;
+  const adversaire = m.a === team ? m.b : m.a;
+  const fait = isMatchDecided(m);
+  const resultat = !fait ? '' : nous > eux ? 'gagne' : nous < eux ? 'perdu' : 'nul';
+  const resultatLabel = { gagne: 'Gagné', perdu: 'Perdu', nul: 'Nul' }[resultat] || '';
+  return `
+    <div class="mon-match ${fait ? 'done ' + resultat : ''}">
+      <div class="mon-match-quand">
+        <span class="planning-time">${escapeHtml(x.time || '—')}</span>
+        ${x.terrain ? `<span class="planning-terrain">T${x.terrain}</span>` : ''}
+      </div>
+      <div class="mon-match-qui">
+        <div class="tiny muted">${escapeHtml(x.phase)}</div>
+        <div>contre <strong>${escapeHtml(adversaire)}</strong></div>
+      </div>
+      <div class="mon-match-score">
+        ${fait ? `<strong>${nous} – ${eux}</strong><div class="tiny">${resultatLabel}</div>` : '<span class="tiny muted">à jouer</span>'}
+      </div>
+    </div>
+  `;
+}
+
+function renderMonEquipeTab(container) {
+  const t = STATE.tournament;
+  const s = t.state;
+  let team = getMonEquipe(t.slug);
+  // L'équipe a pu être renommée ou retirée par l'organisateur
+  if (team && !s.teams.includes(team)) { setMonEquipe(t.slug, ''); team = ''; }
+
+  const teamsTriees = [...s.teams].sort((a, b) => a.localeCompare(b, 'fr'));
+  const choix = `
+    <label class="field">
+      <span class="label-text">${team ? 'Mon équipe' : 'Choisis ton équipe pour voir tes matchs, tes terrains et tes horaires'}</span>
+      <select id="mon-equipe-select">
+        <option value="">— Choisir mon équipe —</option>
+        ${teamsTriees.map(n => `<option value="${escapeHtml(n)}" ${n === team ? 'selected' : ''}>${escapeHtml(n)}</option>`).join('')}
+      </select>
+    </label>
+  `;
+
+  let corps = '';
+  if (s.teams.length === 0) {
+    corps = '<div class="empty">Les inscriptions sont en cours…</div>';
+  } else if (team) {
+    const matchs = teamMatches(s, team);
+    if (matchs.length === 0) {
+      corps = '<div class="empty">Les poules ne sont pas encore tirées. Tes matchs s’afficheront ici dès le tirage.</div>';
+    } else {
+      const prochain = matchs.find(x => !isMatchDecided(x.m));
+      // Place dans la poule
+      let place = '';
+      const poule = (s.poules || []).find(p => p.teams.includes(team));
+      if (poule) {
+        const classement = computeStandings(poule, s.config.format);
+        const rang = classement.findIndex(r => r.team === team);
+        const st = classement[rang];
+        place = `<div class="tiny muted mb-2">Poule ${escapeHtml(poule.name)} : <strong>${rang + 1}<sup>${rang === 0 ? 're' : 'e'}</sup></strong> sur ${poule.teams.length} · ${st.points} pt${st.points > 1 ? 's' : ''} · ${st.wins} victoire${st.wins > 1 ? 's' : ''}</div>`;
+      }
+      corps = `
+        ${prochain ? `
+          <div class="mon-prochain">
+            <div class="tiny">Prochain match · ${escapeHtml(prochain.phase)}</div>
+            <div class="mon-prochain-quand">
+              ${prochain.time ? escapeHtml(prochain.time) : 'Horaire bientôt affiché'}${prochain.terrain ? ` · Terrain ${prochain.terrain}` : ''}
+            </div>
+            <div>contre <strong>${escapeHtml(prochain.m.a === team ? prochain.m.b : prochain.m.a)}</strong></div>
+          </div>
+        ` : `<div class="mon-prochain fini"><div class="mon-prochain-quand">Plus de match prévu pour l’instant</div><div class="tiny">La suite dépend des résultats : la page se met à jour toute seule.</div></div>`}
+        <div class="card">
+          <h3 class="mb-2">Tous mes matchs</h3>
+          ${place}
+          ${matchs.map(x => monEquipeMatchHtml(x, team)).join('')}
+        </div>
+      `;
+    }
+  }
+
+  container.innerHTML = `<div class="card">${choix}</div>${corps}`;
+  $('#mon-equipe-select').addEventListener('change', e => {
+    setMonEquipe(t.slug, e.target.value);
+    renderMonEquipeTab(container);
+  });
 }
 
 // ============== CONFIG ERROR ==============
