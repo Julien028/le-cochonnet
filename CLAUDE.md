@@ -37,13 +37,13 @@ Pas d'étape de construction, pas de dépendances. Les fichiers de `public/` son
 
 ## Comptes (depuis le 08/10/2026)
 
-- Trois rôles, dans la table  de Supabase : **principal** (Julien, gère tout le monde),
+- Trois rôles, dans la table `profiles` de Supabase : **principal** (Julien, gère tout le monde),
   **admin** (voit et modifie tous les tournois, gère les organisateurs), **organisateur** (ses tournois).
 - Plus d'inscription libre : les comptes sont créés dans la page « Comptes » de l'appli.
   Dans Supabase, « Allow new users to sign up » doit rester désactivé.
 - Connexion par identifiant : l'identifiant devient une adresse interne
-   (même valeur dans  et ).
-- Désactiver un compte = blocage de connexion +  ; ses tournois restent.
-- Le serveur a besoin du secret  (Cloudflare > le-cochonnet > Paramètres >
-  Variables et secrets). Jamais dans les fichiers. L'adresse Supabase est dans  ET .
-- Tester en local : fichier  (ignoré par git) avec SUPABASE_URL et SUPABASE_SERVICE_KEY.
+  `identifiant@comptes.le-cochonnet.bretonvilliers28.workers.dev` (même valeur dans `src/index.js` et `public/app.js`).
+- Désactiver un compte = blocage de connexion + `actif = false` ; ses tournois restent.
+- Le serveur a besoin du secret `SUPABASE_SERVICE_KEY` (Cloudflare > le-cochonnet > Paramètres >
+  Variables et secrets). Jamais dans les fichiers. L'adresse Supabase est dans `wrangler.jsonc` ET `public/config.js`.
+- Tester en local : fichier `.dev.vars` (ignoré par git) avec SUPABASE_URL et SUPABASE_SERVICE_KEY.
