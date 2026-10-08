@@ -1,15 +1,18 @@
 {
   "name": "le-cochonnet",
   "compatibility_date": "2026-10-01",
-  // Petit serveur : gestion des comptes sous /api/comptes, le reste vient de public/
+  // Petit serveur : connexion, comptes et tournois sous /api/, le reste vient de public/
   "main": "src/index.js",
   "assets": {
     "directory": "./public",
     "binding": "ASSETS"
   },
-  // Adresse du projet Supabase (la même que dans public/config.js).
-  // La clé secrète SUPABASE_SERVICE_KEY se saisit dans Cloudflare, jamais ici.
-  "vars": {
-    "SUPABASE_URL": "https://okyjxusamilhrhcnqadk.supabase.co"
-  }
+  // Base créée le 08/10/2026 (région WEUR) par : npx wrangler d1 create le-cochonnet
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "le-cochonnet",
+      "database_id": "01eb4954-cf85-41ba-bf9c-8571ce14fdb9"
+    }
+  ]
 }

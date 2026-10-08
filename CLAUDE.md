@@ -9,41 +9,54 @@ mots simples, et évite le jargon quand un mot courant suffit.
 
 | Élément | Contenu |
 |---|---|
-| `public/` | **Le site tel qu'il est publié.** Tout ce qui est dans ce dossier est en ligne, rien d'autre. |
+| `public/` | Les pages de l'appli (fichiers statiques). Tout le moteur du tournoi est dans `public/app.js`. |
+| `src/` | Le petit serveur : connexion, comptes et tournois sous `/api/` (`index.js`), mots de passe et cookie (`session.js`). |
+| `db/schema.sql` | Structure de la base Cloudflare D1 `le-cochonnet`. |
+| `scripts/compte.mjs` | Crée un compte ou redonne un mot de passe directement dans la base (premier compte, secours). |
 | `wrangler.jsonc` | Configuration Cloudflare. Le `name` doit rester `le-cochonnet` : c'est lui qui donne l'adresse. |
-| `src/index.js` | Petit serveur : sert `public/` et gère les comptes sous `/api/comptes` (clé secrète Supabase). |
-| `docs/` | Notices d'origine, non publiées (si le dossier existe). |
+| `docs/` | Notice d'origine, non publiée. |
 
-Pas d'étape de construction, pas de dépendances. Les fichiers de `public/` sont statiques ; seul `src/index.js` tourne côté serveur.
+Pas d'étape de construction, pas de dépendances.
 
 ## En ligne
 
-- Adresse : https://le-cochonnet.bretonvilliers28.workers.dev/ (Cloudflare Worker `le-cochonnet`, fichiers statiques).
-- Code : GitHub privé `Julien028/le-cochonnet` (à créer au premier passage, voir `../LISEZ-MOI-applications.md`).
-- Après chaque modification : vérifier dans le navigateur, commit, `git push`.
-  Si le dépôt est relié au Worker dans Cloudflare (Settings > Builds), la publication se fait
-  toute seule. Sinon : `npx wrangler deploy` dans ce dossier.
+- Adresse : https://le-cochonnet.bretonvilliers28.workers.dev/ (Cloudflare Worker `le-cochonnet`).
+- Compte Cloudflare : bretonvilliers28@gmail.com (compte personnel de Julien, c'est voulu).
+- Code : GitHub privé `Julien028/le-cochonnet`, relié au Worker : **un `git push` publie le site**
+  (en ~30 s). Ne pousser qu'avec l'accord de Julien, puis vérifier en ligne.
+- Base : Cloudflare D1 `le-cochonnet` (id `01eb4954-cf85-41ba-bf9c-8571ce14fdb9`, région WEUR),
+  créée le 08/10/2026. Elle remplace Supabase (abandonné, on est reparti de zéro).
 - Version de départ : copie du 07/10/2026 des fichiers déposés à la main sur Cloudflare.
 
 ## Règles à ne pas perdre en chemin
 
 - L'adresse du site ne doit pas changer : elle est enregistrée sur les téléphones.
 - L'appli doit rester pratique sur téléphone.
-- Les données sont dans Supabase (base en ligne), pas dans le site : `public/config.js` contient l'adresse du projet et la clé publique « anon ». Ne pas les changer sans raison.
-- `docs/supabase-schema.sql` est le schéma de la base. Toute évolution de la base se fait dans Supabase ET dans ce fichier.
-- `docs/README-origine.md` est la notice d'origine ; sa partie hébergement (Vercel) n'est plus à jour, le site est sur Cloudflare.
+- Toute évolution de la base se fait dans `db/schema.sql` ET en ligne
+  (`npx wrangler d1 execute le-cochonnet --remote --file ...`). Ne jamais vider une table.
+- Le moteur du tournoi travaille sur un état JSON (`state`) ; le serveur le range tel quel.
+  Les noms de champs envoyés au navigateur (`name`, `state`, `organizer_id`…) sont ceux d'avant : ne pas les changer.
+- Mise à jour en direct : la page publique demande toutes les 5 s la `version` du tournoi
+  et ne recharge le tournoi que s'il a changé. Pas de requête quand l'appli est en arrière-plan.
+- `docs/README-origine.md` est la notice d'origine ; ses parties Supabase et Vercel ne sont plus à jour.
 - Si la liste des fichiers du site change, mettre à jour la liste `ASSETS` de `public/service-worker.js` et le numéro de `CACHE_NAME`.
-- L'appli enregistre des données dans le navigateur de l'utilisateur (localStorage). Elles sont liées à l'adresse du site : ne jamais changer l'adresse, et ne pas renommer les clés d'enregistrement sans prévoir la reprise des données existantes.
+- L'appli enregistre des données dans le navigateur de l'utilisateur (localStorage : compteur, duel, plans,
+  « Mon équipe »). Elles sont liées à l'adresse du site : ne jamais changer l'adresse, et ne pas renommer
+  les clés d'enregistrement sans prévoir la reprise des données existantes.
 
-## Comptes (depuis le 08/10/2026)
+## Comptes
 
-- Trois rôles, dans la table `profiles` de Supabase : **principal** (Julien, gère tout le monde),
+- Trois rôles : **principal** (Julien, identifiant `julien` : gère tout le monde),
   **admin** (voit et modifie tous les tournois, gère les organisateurs), **organisateur** (ses tournois).
-- Plus d'inscription libre : les comptes sont créés dans la page « Comptes » de l'appli.
-  Dans Supabase, « Allow new users to sign up » doit rester désactivé.
-- Connexion par identifiant : l'identifiant devient une adresse interne
-  `identifiant@comptes.le-cochonnet.bretonvilliers28.workers.dev` (même valeur dans `src/index.js` et `public/app.js`).
-- Désactiver un compte = blocage de connexion + `actif = false` ; ses tournois restent.
-- Le serveur a besoin du secret `SUPABASE_SERVICE_KEY` (Cloudflare > le-cochonnet > Paramètres >
-  Variables et secrets). Jamais dans les fichiers. L'adresse Supabase est dans `wrangler.jsonc` ET `public/config.js`.
-- Tester en local : fichier `.dev.vars` (ignoré par git) avec SUPABASE_URL et SUPABASE_SERVICE_KEY.
+- Pas d'inscription libre : les comptes sont créés dans la page « Comptes » de l'appli.
+- Connexion par identifiant + mot de passe ; cookie d'un an. Mots de passe jamais en clair (PBKDF2,
+  même méthode que le site des heures).
+- Désactiver un compte le déconnecte partout ; ses tournois restent. Un nouveau mot de passe aussi.
+- Mot de passe du principal perdu : `node scripts/compte.mjs julien principal "Julien"`, puis lancer
+  la commande affichée.
+
+## Tester en local
+
+Volet d'aperçu : configuration `le-cochonnet` (port 8791) dans `../Site-ferme/.claude/launch.json`.
+Base de test locale : `npx wrangler d1 execute le-cochonnet --local --file db/schema.sql`, puis
+`node scripts/compte.mjs essai principal "Essai" --local` et la commande affichée.

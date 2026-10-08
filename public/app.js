@@ -3,25 +3,33 @@
 
 // ============== SETUP ==============
 
-const config = window.LECOCHONNET_CONFIG || {};
-let supabase = null;
-try {
-  if (!config.SUPABASE_URL || config.SUPABASE_URL.includes('À_REMPLIR')) {
-    throw new Error('Supabase non configuré');
+// Les données (comptes, tournois) sont gardées par le serveur du site (src/index.js),
+// dans la base Cloudflare D1. Le navigateur lui parle par /api/.
+
+async function appelServeur(chemin, { method = 'GET', body } = {}) {
+  const r = await fetch(chemin, {
+    method,
+    credentials: 'same-origin',
+    headers: body === undefined ? {} : { 'content-type': 'application/json' },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const res = await r.json().catch(() => ({}));
+  if (!r.ok) {
+    const e = new Error(res.erreur || 'Erreur ' + r.status);
+    e.status = r.status;
+    throw e;
   }
-  supabase = window.supabase.createClient(config.SUPABASE_URL, config.SUPABASE_ANON_KEY);
-} catch (e) {
-  console.error(e);
+  return res;
 }
 
 const app = document.getElementById('app');
 
 const STATE = {
-  user: null,
-  profil: undefined, // fiche du compte connecté (rôle, actif) ; undefined = pas encore lue
+  user: undefined, // compte connecté ; undefined = pas encore demandé au serveur, null = personne
+  profil: null,
   tournament: null,
   mode: 'admin',
-  realtimeChannel: null,
+  realtimeChannel: null, // minuterie qui guette les mises à jour d'un tournoi
   saveTimer: null,
   savePending: false,
   activeTab: 'tournoi', // 'tournoi' | 'plan' | 'planning' | 'reglement' | 'compteur'
@@ -260,12 +268,7 @@ function parseRoute() {
 async function route() {
   const r = parseRoute();
   cleanupRealtime();
-  if (!supabase) { renderConfigError(); return; }
-  if (!STATE.user) {
-    const { data } = await supabase.auth.getUser();
-    STATE.user = data?.user || null;
-  }
-  if (STATE.user && STATE.profil === undefined) await chargerProfil();
+  if (STATE.user === undefined) await chargerCompte();
   if (r.name === 'home') return renderHome();
   if (r.name === 'login') return renderLogin();
   if (r.name === 'comptes') return renderComptes();
@@ -275,7 +278,6 @@ async function route() {
   if (r.name === 'mesure') return renderMesure();
   if (r.name === 'admin') {
     if (!STATE.user) { navigate('#/login'); return; }
-    if (!compteAutorise()) return renderCompteRefuse();
     return loadAndRenderAdmin(r.slug);
   }
   if (r.name === 'public') return loadAndRenderPublic(r.slug);
@@ -286,92 +288,60 @@ window.addEventListener('hashchange', route);
 // ============== AUTH ==============
 
 async function signIn(identifiant, password) {
-  const { data, error } = await supabase.auth.signInWithPassword({ email: versEmail(identifiant), password });
-  if (error) throw new Error(error.message === 'Invalid login credentials' ? 'Identifiant ou mot de passe incorrect' : error.message);
-  STATE.user = data.user;
-  await chargerProfil();
-  return data.user;
+  const r = await appelServeur('/api/connexion', { method: 'POST', body: { identifiant, motDePasse: password } });
+  STATE.user = r.compte;
+  STATE.profil = r.compte;
+  return r.compte;
 }
 
 async function signOut() {
-  await supabase.auth.signOut();
+  await appelServeur('/api/deconnexion', { method: 'POST', body: {} }).catch(() => {});
   STATE.user = null;
-  STATE.profil = undefined;
+  STATE.profil = null;
   navigate('#/');
 }
 
 // ============== DATA ==============
 
+// Les administrateurs reçoivent les tournois de tout le monde, les organisateurs les leurs
 async function listMyTournaments() {
-  let q = supabase
-    .from('tournaments')
-    .select('id, slug, name, created_at, is_public, state, organizer_id');
-  // Les administrateurs voient les tournois de tout le monde
-  if (!estAdmin()) q = q.eq('organizer_id', STATE.user.id);
-  const { data, error } = await q.order('created_at', { ascending: false });
-  if (error) throw error;
-  return data || [];
-}
-
-// Noms des organisateurs, pour les administrateurs
-async function nomsOrganisateurs() {
-  const { data } = await supabase.from('profiles').select('id, nom, identifiant');
-  const noms = {};
-  (data || []).forEach(p => { noms[p.id] = p.nom || p.identifiant; });
-  return noms;
+  return (await appelServeur('/api/tournois')).tournois;
 }
 
 async function createTournament(name) {
-  let baseSlug = slugify(name);
-  let slug = baseSlug;
-  let attempt = 0;
-  while (attempt < 5) {
-    const { data: existing } = await supabase
-      .from('tournaments').select('id').eq('slug', slug).maybeSingle();
-    if (!existing) break;
-    attempt++;
-    slug = baseSlug + '-' + Math.random().toString(36).slice(2, 5);
-  }
-  const { data, error } = await supabase
-    .from('tournaments')
-    .insert({
-      slug, name,
-      organizer_id: STATE.user.id,
-      state: defaultState(),
-      is_public: true
-    })
-    .select().single();
-  if (error) throw error;
-  return data;
+  return (await appelServeur('/api/tournois', { method: 'POST', body: { nom: name, etat: defaultState() } })).tournoi;
 }
 
 async function getTournament(slug) {
-  const { data, error } = await supabase
-    .from('tournaments').select('*').eq('slug', slug).maybeSingle();
-  if (error) throw error;
-  return data;
+  try {
+    return (await appelServeur('/api/tournois/' + encodeURIComponent(slug))).tournoi;
+  } catch (e) {
+    if (e.status === 404) return null;
+    throw e;
+  }
 }
 
 async function saveState(id, state) {
+  const t = STATE.tournament;
   STATE.savePending = true;
   renderSaveIndicator();
-  const { error } = await supabase
-    .from('tournaments').update({ state }).eq('id', id);
+  try {
+    const r = await appelServeur(`/api/tournois/${encodeURIComponent(t.slug)}/etat`, { method: 'PUT', body: { etat: state } });
+    t.version = r.version;
+  } catch (e) {
+    toast('Erreur de sauvegarde : ' + e.message);
+    console.error(e);
+  }
   STATE.savePending = false;
   renderSaveIndicator();
-  if (error) { toast('Erreur de sauvegarde'); console.error(error); }
 }
 
 async function renameTournament(id, name) {
-  const { error } = await supabase
-    .from('tournaments').update({ name }).eq('id', id);
-  if (error) throw error;
+  await appelServeur('/api/tournois/' + encodeURIComponent(STATE.tournament.slug), { method: 'PATCH', body: { nom: name } });
 }
 
 async function deleteTournamentBySlug(slug) {
-  const { error } = await supabase
-    .from('tournaments').delete().eq('slug', slug);
-  if (error) throw error;
+  await appelServeur('/api/tournois/' + encodeURIComponent(slug), { method: 'DELETE' });
 }
 
 function scheduleSave() {
@@ -382,21 +352,38 @@ function scheduleSave() {
   }, 600);
 }
 
+// Mise à jour en direct : toutes les 5 secondes, on demande au serveur si le tournoi a changé
+// (une toute petite question), et on ne recharge le tournoi entier que s'il a changé.
 function subscribeToTournament(id, onUpdate) {
   cleanupRealtime();
-  STATE.realtimeChannel = supabase
-    .channel('t-' + id)
-    .on('postgres_changes',
-      { event: 'UPDATE', schema: 'public', table: 'tournaments', filter: 'id=eq.' + id },
-      payload => onUpdate(payload.new)
-    )
-    .subscribe();
+  const slug = STATE.tournament.slug;
+  let version = STATE.tournament.version;
+  const verifier = async () => {
+    // Téléphone en veille ou appli en arrière-plan : on ne consomme rien
+    if (document.hidden) return;
+    try {
+      const r = await appelServeur(`/api/tournois/${encodeURIComponent(slug)}/version`);
+      if (r.version === version) return;
+      const fresh = await getTournament(slug);
+      if (!fresh || STATE.tournament?.slug !== slug) return;
+      version = fresh.version;
+      onUpdate(fresh);
+    } catch {}
+  };
+  STATE.realtimeChannel = setInterval(verifier, 5000);
+  // Au retour sur l'appli, on vérifie tout de suite
+  STATE.realtimeRetour = verifier;
+  document.addEventListener('visibilitychange', verifier);
 }
 
 function cleanupRealtime() {
   if (STATE.realtimeChannel) {
-    supabase.removeChannel(STATE.realtimeChannel);
+    clearInterval(STATE.realtimeChannel);
     STATE.realtimeChannel = null;
+  }
+  if (STATE.realtimeRetour) {
+    document.removeEventListener('visibilitychange', STATE.realtimeRetour);
+    STATE.realtimeRetour = null;
   }
 }
 
@@ -459,13 +446,8 @@ async function renderHome() {
     bindTopbar();
     return;
   }
-  if (!compteAutorise()) return renderCompteRefuse();
   let tournaments = [];
-  let noms = {};
-  try {
-    tournaments = await listMyTournaments();
-    if (estAdmin()) noms = await nomsOrganisateurs();
-  }
+  try { tournaments = await listMyTournaments(); }
   catch (e) { toast('Erreur de chargement'); }
 
   app.innerHTML = `
@@ -490,7 +472,7 @@ async function renderHome() {
                 ${new Date(t.created_at).toLocaleDateString('fr-FR')}
                 · ${(t.state?.teams?.length || 0)} équipes
                 · <span class="badge ${tournamentStatusBadge(t)}">${tournamentStatusLabel(t)}</span>
-                ${estAdmin() && t.organizer_id !== STATE.user.id ? `· par ${escapeHtml(noms[t.organizer_id] || 'compte supprimé')}` : ''}
+                ${estAdmin() && t.organizer_id !== STATE.user.id ? `· par ${escapeHtml(t.organizer_name || 'compte supprimé')}` : ''}
               </div>
             </div>
             <div class="row tight">
@@ -1136,7 +1118,7 @@ async function loadAndRenderAdmin(slug) {
   try {
     const t = await getTournament(slug);
     if (!t) { app.innerHTML = `${topbar()}<div class="empty">Tournoi introuvable.</div>`; bindTopbar(); return; }
-    if (t.organizer_id !== STATE.user.id && !estAdmin()) {
+    if (!t.peutModifier) {
       app.innerHTML = `${topbar()}<div class="empty">Ce tournoi ne t'appartient pas.</div>`;
       bindTopbar(); return;
     }
@@ -4163,7 +4145,9 @@ async function loadAndRenderPublic(slug) {
       STATE.tournament = fresh;
       if (!fresh.state.step) STATE.tournament.state = defaultState();
       migrateState(STATE.tournament.state);
+      const y = window.scrollY;
       renderPublic();
+      window.scrollTo(0, y);
     });
   } catch (e) { toast('Erreur : ' + e.message); }
 }
@@ -4402,56 +4386,22 @@ function renderMonEquipeTab(container) {
 
 // ============== COMPTES (administrateurs et organisateurs) ==============
 
-// Les comptes créés par identifiant ont une adresse interne (voir src/index.js)
-const DOMAINE_IDENTIFIANT = 'comptes.le-cochonnet.bretonvilliers28.workers.dev';
-
 const ROLE_LABELS = { principal: 'Administrateur principal', admin: 'Administrateur', organisateur: 'Organisateur' };
 
-function versEmail(identifiantOuEmail) {
-  const v = identifiantOuEmail.trim().toLowerCase();
-  return v.includes('@') ? v : `${v}@${DOMAINE_IDENTIFIANT}`;
-}
-
-// Fiche du compte connecté (rôle, actif). null = pas de fiche : compte non autorisé.
-async function chargerProfil() {
-  STATE.profil = null;
-  if (!STATE.user) return;
-  const { data, error } = await supabase.from('profiles').select('*').eq('id', STATE.user.id).maybeSingle();
-  if (error) {
-    // Table pas encore créée dans Supabase : on garde l'ancien fonctionnement
-    console.warn('Fiches de comptes indisponibles :', error.message);
-    STATE.profil = { role: 'organisateur', actif: true, ancien: true };
-    return;
-  }
-  STATE.profil = data || null;
+async function chargerCompte() {
+  try { STATE.user = (await appelServeur('/api/moi')).compte; }
+  catch { STATE.user = null; }
+  STATE.profil = STATE.user;
 }
 
 function estAdmin() {
   const p = STATE.profil;
-  return !!p && p.actif && (p.role === 'principal' || p.role === 'admin');
-}
-
-function compteAutorise() {
-  return !!STATE.profil && STATE.profil.actif;
+  return !!p && (p.role === 'principal' || p.role === 'admin');
 }
 
 function nomAffiche() {
   const p = STATE.profil;
-  if (p && (p.nom || p.identifiant)) return p.nom || p.identifiant;
-  const email = STATE.user?.email || '';
-  return email.endsWith('@' + DOMAINE_IDENTIFIANT) ? email.split('@')[0] : email;
-}
-
-function renderCompteRefuse() {
-  app.innerHTML = `
-    ${topbar()}
-    <div class="auth-container">
-      <h2 style="margin-bottom: 4px;">Compte non activé</h2>
-      <p class="muted">Ce compte n'a pas (ou plus) accès à l'organisation des tournois.
-      Demandez à un administrateur de vous créer un compte ou de le réactiver.</p>
-    </div>
-  `;
-  bindTopbar();
+  return p ? (p.nom || p.identifiant) : '';
 }
 
 // Mot de passe facile à dicter : boule-4827-terrain
@@ -4463,19 +4413,8 @@ function genererMotDePasse() {
 }
 
 // Appel au serveur du site pour gérer les comptes
-async function apiComptes(chemin = '', { method = 'GET', body } = {}) {
-  const { data } = await supabase.auth.getSession();
-  const r = await fetch('/api/comptes' + chemin, {
-    method,
-    headers: {
-      authorization: 'Bearer ' + (data.session?.access_token || ''),
-      'content-type': 'application/json'
-    },
-    body: body === undefined ? undefined : JSON.stringify(body)
-  });
-  const res = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(res.erreur || 'Erreur ' + r.status);
-  return res;
+function apiComptes(chemin = '', options = {}) {
+  return appelServeur('/api/comptes' + chemin, options);
 }
 
 // Même règle que le serveur : le principal gère tout le monde sauf lui-même,
@@ -4637,31 +4576,16 @@ function renderMonMotDePasse() {
     const a = $('#mdp-1').value, b = $('#mdp-2').value;
     if (a.length < 8) { toast('Au moins 8 caractères'); return; }
     if (a !== b) { toast('Les deux mots de passe sont différents'); return; }
-    const { error } = await supabase.auth.updateUser({ password: a });
-    if (error) { toast('Erreur : ' + error.message); return; }
+    try { await appelServeur('/api/moi/mot-de-passe', { method: 'POST', body: { motDePasse: a } }); }
+    catch (e) { toast('Erreur : ' + e.message); return; }
     toast('Mot de passe changé');
     navigate('#/');
   });
 }
 
-// ============== CONFIG ERROR ==============
-
-function renderConfigError() {
-  app.innerHTML = `
-    ${topbar({ showUser: false })}
-    <div class="card" style="margin-top: 40px;">
-      <h2 style="color: var(--danger);">Configuration manquante</h2>
-      <p>L'application n'est pas connectée à une base Supabase.</p>
-      <p>Ouvre le fichier <code>config.js</code> et remplis tes clés Supabase, puis redéploie.</p>
-      <p class="muted tiny">Voir le README pour les instructions complètes.</p>
-    </div>
-  `;
-}
-
 // ============== INIT ==============
 
 (async function init() {
-  if (!supabase) { renderConfigError(); return; }
   // Bouton « Imprimer le récapitulatif » (présent dans la vue admin et la vue publique)
   document.addEventListener('click', e => {
     const btn = e.target.closest && e.target.closest('#print-recap');
@@ -4672,11 +4596,6 @@ function renderConfigError() {
     if (btnPoules && STATE.tournament && STATE.tournament.state) {
       printDocument('Résultats des poules — ' + STATE.tournament.name, buildPrintablePouleResults(STATE.tournament.state));
     }
-  });
-  const { data } = await supabase.auth.getSession();
-  STATE.user = data?.session?.user || null;
-  supabase.auth.onAuthStateChange((event, session) => {
-    STATE.user = session?.user || null;
   });
   await route();
 })();
