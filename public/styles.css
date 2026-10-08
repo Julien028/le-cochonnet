@@ -1319,6 +1319,10 @@ button.icon { padding: 6px 10px; }
   h1 { font-size: 22px; }
   h2 { font-size: 18px; }
   .topbar { padding: 4px 0 16px; margin-bottom: 4px; }
+  .topbar { flex-wrap: wrap; gap: 8px; }
+  .topbar-right { flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+  .topbar-right .user { display: none; }
+  .topbar-right .btn, .topbar-right button { padding: 6px 10px; font-size: 13px; }
   .stepper { font-size: 11px; }
   .stepper > div { padding: 6px 4px; }
   .poules-grid { grid-template-columns: 1fr; }
@@ -1453,3 +1457,33 @@ button.icon { padding: 6px 10px; }
 .mon-match.gagne .mon-match-score { color: var(--success); }
 .mon-match.perdu .mon-match-score { color: var(--danger); }
 .mon-match.done { opacity: 0.85; }
+
+/* ===== Comptes ===== */
+
+.compte-form {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0 16px;
+}
+.compte-ligne {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 10px 0;
+  border-bottom: 0.5px solid var(--border);
+}
+.compte-ligne:last-child { border-bottom: none; }
+.compte-ligne.inactif .compte-qui { opacity: 0.55; }
+.compte-qui { min-width: 0; overflow-wrap: anywhere; }
+.compte-identifiants {
+  display: grid;
+  gap: 8px;
+  background: var(--surface-2);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  margin: 12px 0;
+}
+.compte-identifiants > div { display: flex; flex-direction: column; overflow-wrap: anywhere; }
+.compte-identifiants strong { font-size: 17px; font-variant-numeric: tabular-nums; }

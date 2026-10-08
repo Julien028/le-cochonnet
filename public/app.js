@@ -18,6 +18,7 @@ const app = document.getElementById('app');
 
 const STATE = {
   user: null,
+  profil: undefined, // fiche du compte connecté (rôle, actif) ; undefined = pas encore lue
   tournament: null,
   mode: 'admin',
   realtimeChannel: null,
@@ -245,7 +246,9 @@ function parseRoute() {
   const parts = h.split('/').filter(Boolean);
   if (parts.length === 0) return { name: 'home' };
   if (parts[0] === 'login') return { name: 'login' };
-  if (parts[0] === 'signup') return { name: 'signup' };
+  if (parts[0] === 'signup') return { name: 'login' }; // inscription libre fermée : comptes créés par les administrateurs
+  if (parts[0] === 'comptes') return { name: 'comptes' };
+  if (parts[0] === 'mot-de-passe') return { name: 'mot-de-passe' };
   if (parts[0] === 'compteur') return { name: 'compteur' };
   if (parts[0] === 'duel') return { name: 'duel' };
   if (parts[0] === 'mesure') return { name: 'mesure' };
@@ -262,14 +265,17 @@ async function route() {
     const { data } = await supabase.auth.getUser();
     STATE.user = data?.user || null;
   }
+  if (STATE.user && STATE.profil === undefined) await chargerProfil();
   if (r.name === 'home') return renderHome();
   if (r.name === 'login') return renderLogin();
-  if (r.name === 'signup') return renderSignup();
+  if (r.name === 'comptes') return renderComptes();
+  if (r.name === 'mot-de-passe') return renderMonMotDePasse();
   if (r.name === 'compteur') return renderCompteur();
   if (r.name === 'duel') return renderDuel();
   if (r.name === 'mesure') return renderMesure();
   if (r.name === 'admin') {
     if (!STATE.user) { navigate('#/login'); return; }
+    if (!compteAutorise()) return renderCompteRefuse();
     return loadAndRenderAdmin(r.slug);
   }
   if (r.name === 'public') return loadAndRenderPublic(r.slug);
@@ -279,36 +285,40 @@ window.addEventListener('hashchange', route);
 
 // ============== AUTH ==============
 
-async function signIn(email, password) {
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) throw error;
+async function signIn(identifiant, password) {
+  const { data, error } = await supabase.auth.signInWithPassword({ email: versEmail(identifiant), password });
+  if (error) throw new Error(error.message === 'Invalid login credentials' ? 'Identifiant ou mot de passe incorrect' : error.message);
   STATE.user = data.user;
-  return data.user;
-}
-
-async function signUp(email, password) {
-  const { data, error } = await supabase.auth.signUp({ email, password });
-  if (error) throw error;
-  STATE.user = data.user;
+  await chargerProfil();
   return data.user;
 }
 
 async function signOut() {
   await supabase.auth.signOut();
   STATE.user = null;
+  STATE.profil = undefined;
   navigate('#/');
 }
 
 // ============== DATA ==============
 
 async function listMyTournaments() {
-  const { data, error } = await supabase
+  let q = supabase
     .from('tournaments')
-    .select('id, slug, name, created_at, is_public, state')
-    .eq('organizer_id', STATE.user.id)
-    .order('created_at', { ascending: false });
+    .select('id, slug, name, created_at, is_public, state, organizer_id');
+  // Les administrateurs voient les tournois de tout le monde
+  if (!estAdmin()) q = q.eq('organizer_id', STATE.user.id);
+  const { data, error } = await q.order('created_at', { ascending: false });
   if (error) throw error;
   return data || [];
+}
+
+// Noms des organisateurs, pour les administrateurs
+async function nomsOrganisateurs() {
+  const { data } = await supabase.from('profiles').select('id, nom, identifiant');
+  const noms = {};
+  (data || []).forEach(p => { noms[p.id] = p.nom || p.identifiant; });
+  return noms;
 }
 
 async function createTournament(name) {
@@ -360,7 +370,7 @@ async function renameTournament(id, name) {
 
 async function deleteTournamentBySlug(slug) {
   const { error } = await supabase
-    .from('tournaments').delete().eq('slug', slug).eq('organizer_id', STATE.user.id);
+    .from('tournaments').delete().eq('slug', slug);
   if (error) throw error;
 }
 
@@ -409,7 +419,9 @@ function topbar({ showUser = true } = {}) {
       </a>
       <div class="topbar-right">
         ${showUser && u ? `
-          <span class="user">${escapeHtml(u.email)}</span>
+          <span class="user">${escapeHtml(nomAffiche())}</span>
+          ${estAdmin() ? '<a href="#/comptes" class="btn ghost">Comptes</a>' : ''}
+          <a href="#/mot-de-passe" class="btn ghost" title="Changer mon mot de passe">🔑</a>
           <button class="ghost" id="btn-logout">Déconnexion</button>
         ` : showUser && !u ? `
           <a href="#/login" class="btn ghost">Connexion organisateur</a>
@@ -447,14 +459,19 @@ async function renderHome() {
     bindTopbar();
     return;
   }
+  if (!compteAutorise()) return renderCompteRefuse();
   let tournaments = [];
-  try { tournaments = await listMyTournaments(); }
+  let noms = {};
+  try {
+    tournaments = await listMyTournaments();
+    if (estAdmin()) noms = await nomsOrganisateurs();
+  }
   catch (e) { toast('Erreur de chargement'); }
 
   app.innerHTML = `
     ${topbar()}
     <div class="row mb-2" style="justify-content: space-between; flex-wrap: wrap; gap: 8px;">
-      <h1>Mes tournois</h1>
+      <h1>${estAdmin() ? 'Tous les tournois' : 'Mes tournois'}</h1>
       <div class="row tight">
         <a href="#/compteur" class="btn">🎯 Compteur</a>
         <a href="#/duel" class="btn">🎲 Duel</a>
@@ -473,6 +490,7 @@ async function renderHome() {
                 ${new Date(t.created_at).toLocaleDateString('fr-FR')}
                 · ${(t.state?.teams?.length || 0)} équipes
                 · <span class="badge ${tournamentStatusBadge(t)}">${tournamentStatusLabel(t)}</span>
+                ${estAdmin() && t.organizer_id !== STATE.user.id ? `· par ${escapeHtml(noms[t.organizer_id] || 'compte supprimé')}` : ''}
               </div>
             </div>
             <div class="row tight">
@@ -650,10 +668,10 @@ function renderLogin() {
     <div class="auth-container">
       <h2 style="margin-bottom: 4px;">Connexion organisateur</h2>
       <p class="muted tiny mb-2">Pour créer et gérer des tournois.</p>
-      <label class="field"><span class="label-text">Email</span><input type="email" id="login-email" /></label>
+      <label class="field"><span class="label-text">Identifiant (ou e-mail)</span><input type="text" id="login-email" autocapitalize="none" autocomplete="username" spellcheck="false" /></label>
       <label class="field"><span class="label-text">Mot de passe</span><input type="password" id="login-password" /></label>
       <button class="primary" id="btn-login" style="width: 100%; justify-content: center;">Se connecter</button>
-      <p class="tiny center mt-2 muted">Pas encore de compte ? <a href="#/signup">Créer un compte</a></p>
+      <p class="tiny center mt-2 muted">Pas de compte ? Demandez-le à un administrateur.</p>
     </div>
   `;
   bindTopbar();
@@ -665,25 +683,6 @@ function renderLogin() {
   $('#login-password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
 }
 
-function renderSignup() {
-  app.innerHTML = `
-    ${topbar({ showUser: false })}
-    <div class="auth-container">
-      <h2 style="margin-bottom: 4px;">Créer un compte</h2>
-      <p class="muted tiny mb-2">Réservé aux organisateurs.</p>
-      <label class="field"><span class="label-text">Email</span><input type="email" id="su-email" /></label>
-      <label class="field"><span class="label-text">Mot de passe</span><input type="password" id="su-password" /></label>
-      <button class="primary" id="btn-signup" style="width: 100%; justify-content: center;">Créer le compte</button>
-      <p class="tiny center mt-2 muted">Déjà un compte ? <a href="#/login">Se connecter</a></p>
-    </div>
-  `;
-  bindTopbar();
-  const doSignup = async () => {
-    try { await signUp($('#su-email').value, $('#su-password').value); toast('Compte créé'); navigate('#/'); }
-    catch (e) { toast(e.message || 'Échec'); }
-  };
-  $('#btn-signup').addEventListener('click', doSignup);
-}
 
 // ============== COMPTEUR DE POINTS ==============
 
@@ -1137,7 +1136,7 @@ async function loadAndRenderAdmin(slug) {
   try {
     const t = await getTournament(slug);
     if (!t) { app.innerHTML = `${topbar()}<div class="empty">Tournoi introuvable.</div>`; bindTopbar(); return; }
-    if (t.organizer_id !== STATE.user.id) {
+    if (t.organizer_id !== STATE.user.id && !estAdmin()) {
       app.innerHTML = `${topbar()}<div class="empty">Ce tournoi ne t'appartient pas.</div>`;
       bindTopbar(); return;
     }
@@ -4398,6 +4397,250 @@ function renderMonEquipeTab(container) {
   $('#mon-equipe-select').addEventListener('change', e => {
     setMonEquipe(t.slug, e.target.value);
     renderMonEquipeTab(container);
+  });
+}
+
+// ============== COMPTES (administrateurs et organisateurs) ==============
+
+// Les comptes créés par identifiant ont une adresse interne (voir src/index.js)
+const DOMAINE_IDENTIFIANT = 'comptes.le-cochonnet.bretonvilliers28.workers.dev';
+
+const ROLE_LABELS = { principal: 'Administrateur principal', admin: 'Administrateur', organisateur: 'Organisateur' };
+
+function versEmail(identifiantOuEmail) {
+  const v = identifiantOuEmail.trim().toLowerCase();
+  return v.includes('@') ? v : `${v}@${DOMAINE_IDENTIFIANT}`;
+}
+
+// Fiche du compte connecté (rôle, actif). null = pas de fiche : compte non autorisé.
+async function chargerProfil() {
+  STATE.profil = null;
+  if (!STATE.user) return;
+  const { data, error } = await supabase.from('profiles').select('*').eq('id', STATE.user.id).maybeSingle();
+  if (error) {
+    // Table pas encore créée dans Supabase : on garde l'ancien fonctionnement
+    console.warn('Fiches de comptes indisponibles :', error.message);
+    STATE.profil = { role: 'organisateur', actif: true, ancien: true };
+    return;
+  }
+  STATE.profil = data || null;
+}
+
+function estAdmin() {
+  const p = STATE.profil;
+  return !!p && p.actif && (p.role === 'principal' || p.role === 'admin');
+}
+
+function compteAutorise() {
+  return !!STATE.profil && STATE.profil.actif;
+}
+
+function nomAffiche() {
+  const p = STATE.profil;
+  if (p && (p.nom || p.identifiant)) return p.nom || p.identifiant;
+  const email = STATE.user?.email || '';
+  return email.endsWith('@' + DOMAINE_IDENTIFIANT) ? email.split('@')[0] : email;
+}
+
+function renderCompteRefuse() {
+  app.innerHTML = `
+    ${topbar()}
+    <div class="auth-container">
+      <h2 style="margin-bottom: 4px;">Compte non activé</h2>
+      <p class="muted">Ce compte n'a pas (ou plus) accès à l'organisation des tournois.
+      Demandez à un administrateur de vous créer un compte ou de le réactiver.</p>
+    </div>
+  `;
+  bindTopbar();
+}
+
+// Mot de passe facile à dicter : boule-4827-terrain
+function genererMotDePasse() {
+  const mots = ['boule', 'carreau', 'pointe', 'tireur', 'mene', 'terrain', 'cochonnet', 'triplette', 'doublette', 'fanny', 'but', 'palet'];
+  const n = new Uint32Array(3);
+  crypto.getRandomValues(n);
+  return `${mots[n[0] % mots.length]}-${1000 + (n[1] % 9000)}-${mots[n[2] % mots.length]}`;
+}
+
+// Appel au serveur du site pour gérer les comptes
+async function apiComptes(chemin = '', { method = 'GET', body } = {}) {
+  const { data } = await supabase.auth.getSession();
+  const r = await fetch('/api/comptes' + chemin, {
+    method,
+    headers: {
+      authorization: 'Bearer ' + (data.session?.access_token || ''),
+      'content-type': 'application/json'
+    },
+    body: body === undefined ? undefined : JSON.stringify(body)
+  });
+  const res = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(res.erreur || 'Erreur ' + r.status);
+  return res;
+}
+
+// Même règle que le serveur : le principal gère tout le monde sauf lui-même,
+// un administrateur gère les organisateurs.
+function peutGererCompte(moi, cible) {
+  if (moi.id === cible.id) return false;
+  if (moi.role === 'principal') return cible.role !== 'principal';
+  if (moi.role === 'admin') return cible.role === 'organisateur';
+  return false;
+}
+
+function montrerIdentifiants(titre, identifiant, motDePasse) {
+  const wrap = document.createElement('div');
+  wrap.className = 'modal-bg';
+  wrap.innerHTML = `
+    <div class="modal">
+      <h2>${escapeHtml(titre)}</h2>
+      <p class="muted tiny">À donner à la personne. Le mot de passe ne sera plus affiché ensuite :
+      notez-le ou copiez-le maintenant. Elle pourra le changer dans « Mon mot de passe ».</p>
+      <div class="compte-identifiants">
+        <div><span class="tiny muted">Adresse</span><strong>${escapeHtml(window.location.origin)}</strong></div>
+        <div><span class="tiny muted">Identifiant</span><strong>${escapeHtml(identifiant)}</strong></div>
+        <div><span class="tiny muted">Mot de passe</span><strong>${escapeHtml(motDePasse)}</strong></div>
+      </div>
+      <div class="modal-actions">
+        <button class="ghost" id="ids-copier">Copier</button>
+        <button class="primary" id="ids-fermer">C'est noté</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(wrap);
+  wrap.querySelector('#ids-copier').addEventListener('click', async () => {
+    const texte = `LeCochonnet\nAdresse : ${window.location.origin}\nIdentifiant : ${identifiant}\nMot de passe : ${motDePasse}`;
+    try { await navigator.clipboard.writeText(texte); toast('Copié'); } catch { toast('Copie impossible'); }
+  });
+  wrap.querySelector('#ids-fermer').addEventListener('click', () => wrap.remove());
+}
+
+async function renderComptes() {
+  if (!estAdmin()) { navigate('#/'); return; }
+  app.innerHTML = `${topbar()}<div class="empty" style="margin-top: 40px;">Chargement…</div>`;
+  bindTopbar();
+  let liste;
+  try { liste = await apiComptes(); }
+  catch (e) {
+    app.innerHTML = `${topbar()}<div class="card"><h2>Comptes</h2><p style="color: var(--danger);">${escapeHtml(e.message)}</p><a class="btn ghost" href="#/">← Retour</a></div>`;
+    bindTopbar(); return;
+  }
+  const moi = liste.moi;
+  const comptes = liste.comptes;
+  const ligne = c => `
+    <div class="compte-ligne ${c.actif ? '' : 'inactif'}">
+      <div class="compte-qui">
+        <strong>${escapeHtml(c.nom || c.identifiant)}</strong>
+        <div class="tiny muted">${escapeHtml(c.identifiant)} · ${ROLE_LABELS[c.role]}${c.actif ? '' : ' · <strong>désactivé</strong>'}${c.id === moi.id ? ' · c’est vous' : ''}</div>
+      </div>
+      ${peutGererCompte(moi, c) ? `
+        <div class="row tight" style="flex-wrap: wrap;">
+          <button class="ghost" data-mdp="${c.id}" data-ident="${escapeHtml(c.identifiant)}">Nouveau mot de passe</button>
+          <button class="ghost ${c.actif ? 'danger' : ''}" data-actif="${c.id}" data-valeur="${c.actif ? 'non' : 'oui'}" data-nom="${escapeHtml(c.nom || c.identifiant)}">${c.actif ? 'Désactiver' : 'Réactiver'}</button>
+        </div>` : ''}
+    </div>
+  `;
+  const admins = comptes.filter(c => c.role !== 'organisateur');
+  const orgas = comptes.filter(c => c.role === 'organisateur');
+
+  app.innerHTML = `
+    ${topbar()}
+    <div class="row mb-2" style="justify-content: space-between; flex-wrap: wrap; gap: 8px;">
+      <h1>Comptes</h1>
+      <a class="btn ghost" href="#/">← Tournois</a>
+    </div>
+
+    <div class="card">
+      <h3 class="mb-2">Créer un compte</h3>
+      <div class="compte-form">
+        <label class="field"><span class="label-text">Nom (club, comité, personne)</span>
+          <input type="text" id="cc-nom" placeholder="Comité des fêtes d'Aunay" maxlength="80" /></label>
+        <label class="field"><span class="label-text">Identifiant de connexion</span>
+          <input type="text" id="cc-ident" placeholder="comite-aunay" autocapitalize="none" autocomplete="off" spellcheck="false" maxlength="30" /></label>
+        <label class="field"><span class="label-text">Type de compte</span>
+          <select id="cc-role">
+            <option value="organisateur">Organisateur (gère ses tournois)</option>
+            ${moi.role === 'principal' ? '<option value="admin">Administrateur (gère tous les tournois et les organisateurs)</option>' : ''}
+          </select></label>
+        <label class="field"><span class="label-text">Mot de passe</span>
+          <div class="row tight"><input type="text" id="cc-mdp" value="${genererMotDePasse()}" autocomplete="off" style="flex: 1;" />
+          <button class="ghost" id="cc-autre" title="Proposer un autre mot de passe">↻</button></div></label>
+      </div>
+      <button class="primary" id="cc-creer">Créer le compte</button>
+    </div>
+
+    <div class="card">
+      <h3 class="mb-2">Administrateurs</h3>
+      ${admins.map(ligne).join('')}
+    </div>
+    <div class="card">
+      <h3 class="mb-2">Organisateurs</h3>
+      ${orgas.length ? orgas.map(ligne).join('') : '<div class="empty">Aucun organisateur pour le moment.</div>'}
+    </div>
+  `;
+  bindTopbar();
+
+  // Identifiant proposé à partir du nom
+  $('#cc-nom').addEventListener('input', e => {
+    const ident = $('#cc-ident');
+    if (ident.dataset.touche) return;
+    ident.value = slugify(e.target.value).slice(0, 30);
+  });
+  $('#cc-ident').addEventListener('input', e => { e.target.dataset.touche = '1'; });
+  $('#cc-autre').addEventListener('click', () => { $('#cc-mdp').value = genererMotDePasse(); });
+  $('#cc-creer').addEventListener('click', async e => {
+    const btn = e.currentTarget;
+    const identifiant = $('#cc-ident').value.trim().toLowerCase();
+    const motDePasse = $('#cc-mdp').value;
+    btn.disabled = true;
+    try {
+      await apiComptes('', { method: 'POST', body: { nom: $('#cc-nom').value.trim(), identifiant, role: $('#cc-role').value, motDePasse } });
+      await renderComptes();
+      montrerIdentifiants('Compte créé', identifiant, motDePasse);
+    } catch (err) { toast(err.message); btn.disabled = false; }
+  });
+
+  $$('[data-mdp]').forEach(b => b.addEventListener('click', async () => {
+    const motDePasse = genererMotDePasse();
+    if (!confirm(`Donner un nouveau mot de passe à « ${b.dataset.ident} » ?\n\nL'ancien ne marchera plus.`)) return;
+    try {
+      await apiComptes(`/${b.dataset.mdp}/mot-de-passe`, { method: 'POST', body: { motDePasse } });
+      montrerIdentifiants('Nouveau mot de passe', b.dataset.ident, motDePasse);
+    } catch (err) { toast(err.message); }
+  }));
+
+  $$('[data-actif]').forEach(b => b.addEventListener('click', async () => {
+    const actif = b.dataset.valeur === 'oui';
+    if (!actif && !confirm(`Désactiver « ${b.dataset.nom} » ?\n\nIl ne pourra plus se connecter. Ses tournois restent en place et visibles du public.`)) return;
+    try {
+      await apiComptes(`/${b.dataset.actif}/actif`, { method: 'POST', body: { actif } });
+      toast(actif ? 'Compte réactivé' : 'Compte désactivé');
+      renderComptes();
+    } catch (err) { toast(err.message); }
+  }));
+}
+
+function renderMonMotDePasse() {
+  if (!STATE.user) { navigate('#/login'); return; }
+  app.innerHTML = `
+    ${topbar()}
+    <div class="auth-container">
+      <h2 style="margin-bottom: 4px;">Mon mot de passe</h2>
+      <p class="muted tiny mb-2">Au moins 8 caractères.</p>
+      <label class="field"><span class="label-text">Nouveau mot de passe</span><input type="password" id="mdp-1" autocomplete="new-password" /></label>
+      <label class="field"><span class="label-text">Encore une fois</span><input type="password" id="mdp-2" autocomplete="new-password" /></label>
+      <button class="primary" id="mdp-ok" style="width: 100%; justify-content: center;">Changer le mot de passe</button>
+      <p class="tiny center mt-2"><a href="#/">← Retour</a></p>
+    </div>
+  `;
+  bindTopbar();
+  $('#mdp-ok').addEventListener('click', async () => {
+    const a = $('#mdp-1').value, b = $('#mdp-2').value;
+    if (a.length < 8) { toast('Au moins 8 caractères'); return; }
+    if (a !== b) { toast('Les deux mots de passe sont différents'); return; }
+    const { error } = await supabase.auth.updateUser({ password: a });
+    if (error) { toast('Erreur : ' + error.message); return; }
+    toast('Mot de passe changé');
+    navigate('#/');
   });
 }
 

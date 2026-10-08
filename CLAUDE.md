@@ -11,9 +11,10 @@ mots simples, et évite le jargon quand un mot courant suffit.
 |---|---|
 | `public/` | **Le site tel qu'il est publié.** Tout ce qui est dans ce dossier est en ligne, rien d'autre. |
 | `wrangler.jsonc` | Configuration Cloudflare. Le `name` doit rester `le-cochonnet` : c'est lui qui donne l'adresse. |
+| `src/index.js` | Petit serveur : sert `public/` et gère les comptes sous `/api/comptes` (clé secrète Supabase). |
 | `docs/` | Notices d'origine, non publiées (si le dossier existe). |
 
-Pas d'étape de construction, pas de dépendances : ce sont des fichiers statiques.
+Pas d'étape de construction, pas de dépendances. Les fichiers de `public/` sont statiques ; seul `src/index.js` tourne côté serveur.
 
 ## En ligne
 
@@ -33,3 +34,16 @@ Pas d'étape de construction, pas de dépendances : ce sont des fichiers statiqu
 - `docs/README-origine.md` est la notice d'origine ; sa partie hébergement (Vercel) n'est plus à jour, le site est sur Cloudflare.
 - Si la liste des fichiers du site change, mettre à jour la liste `ASSETS` de `public/service-worker.js` et le numéro de `CACHE_NAME`.
 - L'appli enregistre des données dans le navigateur de l'utilisateur (localStorage). Elles sont liées à l'adresse du site : ne jamais changer l'adresse, et ne pas renommer les clés d'enregistrement sans prévoir la reprise des données existantes.
+
+## Comptes (depuis le 08/10/2026)
+
+- Trois rôles, dans la table  de Supabase : **principal** (Julien, gère tout le monde),
+  **admin** (voit et modifie tous les tournois, gère les organisateurs), **organisateur** (ses tournois).
+- Plus d'inscription libre : les comptes sont créés dans la page « Comptes » de l'appli.
+  Dans Supabase, « Allow new users to sign up » doit rester désactivé.
+- Connexion par identifiant : l'identifiant devient une adresse interne
+   (même valeur dans  et ).
+- Désactiver un compte = blocage de connexion +  ; ses tournois restent.
+- Le serveur a besoin du secret  (Cloudflare > le-cochonnet > Paramètres >
+  Variables et secrets). Jamais dans les fichiers. L'adresse Supabase est dans  ET .
+- Tester en local : fichier  (ignoré par git) avec SUPABASE_URL et SUPABASE_SERVICE_KEY.

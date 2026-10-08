@@ -2,7 +2,7 @@
 // Stratégie network-first : on cherche d'abord la dernière version sur le web,
 // et on retombe sur le cache uniquement si le réseau échoue (mode hors-ligne).
 
-const CACHE_NAME = 'lecochonnet-v2';
+const CACHE_NAME = 'lecochonnet-v3';
 const ASSETS = [
   './',
   './index.html',
@@ -37,6 +37,9 @@ self.addEventListener('fetch', event => {
 
   // Pour Supabase : on ne touche à rien, ça passe directement par le réseau
   if (url.hostname.includes('supabase')) return;
+
+  // Gestion des comptes : toujours en direct
+  if (url.pathname.startsWith('/api/')) return;
 
   // Seules les requêtes GET sont mises en cache
   if (event.request.method !== 'GET') return;

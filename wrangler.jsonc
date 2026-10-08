@@ -1,7 +1,15 @@
 {
   "name": "le-cochonnet",
   "compatibility_date": "2026-10-01",
+  // Petit serveur : gestion des comptes sous /api/comptes, le reste vient de public/
+  "main": "src/index.js",
   "assets": {
-    "directory": "./public"
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  // Adresse du projet Supabase (la même que dans public/config.js).
+  // La clé secrète SUPABASE_SERVICE_KEY se saisit dans Cloudflare, jamais ici.
+  "vars": {
+    "SUPABASE_URL": "https://okyjxusamilhrhcnqadk.supabase.co"
   }
 }
